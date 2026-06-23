@@ -9,6 +9,7 @@ import { parsePptxInBrowser } from "@/lib/utils/parse-pptx-client";
 import { renderSlidesInBrowser } from "@/lib/utils/render-slides-client";
 
 type AppView = "upload" | "analyzing" | "review";
+type AnalyzePhase = "parse" | "rules" | "render";
 
 async function readAnalysisResponse(
   res: Response,
@@ -32,11 +33,17 @@ export default function HomePage() {
   const [analysis, setAnalysis] = useState<PresentationAnalysis | null>(null);
   const [error, setError] = useState<string>();
   const [uploadingFile, setUploadingFile] = useState<string>("");
+  const [analyzePhase, setAnalyzePhase] = useState<AnalyzePhase>("parse");
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   async function handleUpload(file: File, options: { skipAi: boolean }) {
     setError(undefined);
+    setRenderError(null);
     setUploadingFile(file.name);
+    setUploadedFile(file);
+    setAnalyzePhase("parse");
     setView("analyzing");
 
     const controller = new AbortController();
@@ -44,7 +51,6 @@ export default function HomePage() {
 
     try {
       let res: Response;
-
       let renderedImages: string[] | undefined;
 
       try {
@@ -53,29 +59,30 @@ export default function HomePage() {
           controller.signal,
         );
 
+        setAnalyzePhase("rules");
+
         const { slide_images: _omit, ...metadataForAnalysis } = metadata;
         void _omit;
 
-        const [analyzeRes, renderRes] = await Promise.all([
-          fetch("/api/analyze", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              metadata: metadataForAnalysis,
-              filename: file.name,
-              skipAi: options.skipAi,
-            }),
-            signal: controller.signal,
+        res = await fetch("/api/analyze", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            metadata: metadataForAnalysis,
+            filename: file.name,
+            skipAi: options.skipAi,
           }),
-          renderSlidesInBrowser(file, controller.signal).catch(() => ({
-            slide_images: [] as string[],
-          })),
-        ]);
+          signal: controller.signal,
+        });
 
-        res = analyzeRes;
+        setAnalyzePhase("render");
+
+        const renderRes = await renderSlidesInBrowser(file, controller.signal);
         if (renderRes.slide_images.length > 0) {
           renderedImages = renderRes.slide_images;
+        } else if (renderRes.render_error) {
+          setRenderError(renderRes.render_error);
         }
       } catch (parseError) {
         if (parseError instanceof Error && parseError.name === "AbortError") {
@@ -92,7 +99,8 @@ export default function HomePage() {
           throw parseError;
         }
 
-        // Local `next dev` has no Python /api/parse — fall back to server-side parse.
+        setAnalyzePhase("rules");
+
         const formData = new FormData();
         formData.append("file", file);
         if (options.skipAi) formData.append("skipAi", "true");
@@ -141,23 +149,48 @@ export default function HomePage() {
     abortRef.current?.abort();
     setView("upload");
     setUploadingFile("");
+    setUploadedFile(null);
   }
 
   function handleBackToUpload() {
     setAnalysis(null);
+    setUploadedFile(null);
     setView("upload");
     setError(undefined);
+    setRenderError(null);
+  }
+
+  function handleSlideImagesReady(images: string[]) {
+    setAnalysis((prev) =>
+      prev
+        ? {
+            ...prev,
+            metadata: { ...prev.metadata, slide_images: images },
+          }
+        : prev,
+    );
+    setRenderError(null);
   }
 
   if (view === "analyzing") {
     return (
-      <AnalyzingPage filename={uploadingFile} onCancel={handleCancelAnalyzing} />
+      <AnalyzingPage
+        filename={uploadingFile}
+        phase={analyzePhase}
+        onCancel={handleCancelAnalyzing}
+      />
     );
   }
 
   if (view === "review" && analysis) {
     return (
-      <ReviewWorkspace initialAnalysis={analysis} onBack={handleBackToUpload} />
+      <ReviewWorkspace
+        initialAnalysis={analysis}
+        uploadFile={uploadedFile}
+        renderError={renderError}
+        onSlideImagesReady={handleSlideImagesReady}
+        onBack={handleBackToUpload}
+      />
     );
   }
 

@@ -11,6 +11,10 @@
     "app/api/render-slides/route.ts": {
       "maxDuration": 60,
       "memory": 1024
+    },
+    "app/api/render-status/route.ts": {
+      "maxDuration": 10,
+      "memory": 256
     }
   }
 }

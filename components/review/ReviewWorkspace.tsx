@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { FileText, LogOut } from "lucide-react";
+import { useEffect, useState } from "react";
+import { FileText, LogOut, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { PresentationAnalysis } from "@/lib/types";
 import { updateFindingStatus } from "@/lib/services/finding-actions";
+import { renderSlidesInBrowser } from "@/lib/utils/render-slides-client";
 import { SlideSidebar } from "@/components/slides/SlideSidebar";
 import { SlidePreview } from "@/components/slides/SlidePreview";
 import { FindingsPanel } from "@/components/findings/FindingsPanel";
@@ -13,10 +14,19 @@ import { AppHeader, StatPill } from "@/components/layout/AppHeader";
 
 interface ReviewWorkspaceProps {
   initialAnalysis: PresentationAnalysis;
+  uploadFile?: File | null;
+  renderError?: string | null;
+  onSlideImagesReady?: (images: string[]) => void;
   onBack: () => void;
 }
 
-export function ReviewWorkspace({ initialAnalysis, onBack }: ReviewWorkspaceProps) {
+export function ReviewWorkspace({
+  initialAnalysis,
+  uploadFile,
+  renderError: initialRenderError,
+  onSlideImagesReady,
+  onBack,
+}: ReviewWorkspaceProps) {
   const router = useRouter();
   const [analysis, setAnalysis] = useState(initialAnalysis);
   const [selectedSlide, setSelectedSlide] = useState(1);
@@ -24,6 +34,60 @@ export function ReviewWorkspace({ initialAnalysis, onBack }: ReviewWorkspaceProp
   const [hoveredFindingId, setHoveredFindingId] = useState<string>();
   const [showLowConfidence, setShowLowConfidence] = useState(false);
   const [showReport, setShowReport] = useState(false);
+  const [renderingSlides, setRenderingSlides] = useState(false);
+  const [renderError, setRenderError] = useState(initialRenderError ?? null);
+
+  const hasSlideImages = Boolean(analysis.metadata.slide_images?.length);
+
+  useEffect(() => {
+    if (!uploadFile || hasSlideImages) return;
+
+    let cancelled = false;
+    setRenderingSlides(true);
+
+    renderSlidesInBrowser(uploadFile)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.slide_images.length > 0) {
+          setAnalysis((prev) => ({
+            ...prev,
+            metadata: { ...prev.metadata, slide_images: res.slide_images },
+          }));
+          onSlideImagesReady?.(res.slide_images);
+          setRenderError(null);
+        } else if (res.render_error) {
+          setRenderError(res.render_error);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRenderingSlides(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- retry only when images missing
+  }, [uploadFile, hasSlideImages]);
+
+  async function handleRetryRender() {
+    if (!uploadFile) return;
+    setRenderingSlides(true);
+    setRenderError(null);
+    try {
+      const res = await renderSlidesInBrowser(uploadFile);
+      if (res.slide_images.length > 0) {
+        setAnalysis((prev) => ({
+          ...prev,
+          metadata: { ...prev.metadata, slide_images: res.slide_images },
+        }));
+        onSlideImagesReady?.(res.slide_images);
+      } else {
+        setRenderError(res.render_error ?? "Render returned no images");
+      }
+    } finally {
+      setRenderingSlides(false);
+    }
+  }
 
   const slideMeta = analysis.metadata.slides.find(
     (s) => s.slide_number === selectedSlide,
@@ -138,6 +202,33 @@ export function ReviewWorkspace({ initialAnalysis, onBack }: ReviewWorkspaceProp
             )}
           </div>
           <div className="min-h-0 flex-1 overflow-hidden p-3 lg:p-4">
+            {!hasSlideImages && (renderError || renderingSlides) && (
+              <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                {renderingSlides ? (
+                  <span>Rendering pixel-accurate slide previews…</span>
+                ) : renderError?.includes("CONVERTAPI_SECRET") ? (
+                  <span>
+                    Pixel-accurate previews need{" "}
+                    <code className="rounded bg-amber-100 px-1">CONVERTAPI_SECRET</code>{" "}
+                    in Vercel env vars (free at convertapi.com), then redeploy.
+                  </span>
+                ) : (
+                  <span className="flex flex-wrap items-center gap-2">
+                    Preview render failed: {renderError}
+                    {uploadFile && (
+                      <button
+                        type="button"
+                        onClick={handleRetryRender}
+                        className="inline-flex items-center gap-1 rounded border border-amber-300 bg-white px-2 py-0.5 text-[10px] font-medium hover:bg-amber-100"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        Retry
+                      </button>
+                    )}
+                  </span>
+                )}
+              </div>
+            )}
             {slideMeta && (
               <SlidePreview
                 slide={slideMeta}
@@ -149,6 +240,7 @@ export function ReviewWorkspace({ initialAnalysis, onBack }: ReviewWorkspaceProp
                 slideImage={
                   analysis.metadata.slide_images?.[selectedSlide - 1]
                 }
+                isRendering={renderingSlides && !hasSlideImages}
               />
             )}
           </div>
