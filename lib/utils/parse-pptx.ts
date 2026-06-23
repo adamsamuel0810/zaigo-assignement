@@ -17,9 +17,19 @@ export async function parsePptx(
       : null);
 
   if (parseUrl) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    // Server-side fetch to our own deployment bypasses the browser session.
+    // Vercel Deployment Protection returns 401 HTML without this header.
+    const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    if (bypass) {
+      headers["x-vercel-protection-bypass"] = bypass;
+    }
+
     const res = await fetch(parseUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         file_base64: base64,
         filename,
